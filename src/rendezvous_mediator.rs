@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -21,8 +22,13 @@ use hbb_common::{
     rendezvous_proto::*,
     sleep,
     socket_client::{self, connect_tcp, is_ipv4, new_direct_udp_for, new_udp_for},
-    tokio::{self, select, sync::Mutex, time::interval},
+    tokio::{
+        self, select,
+        sync::{mpsc, Mutex},
+        time::interval,
+    },
     udp::FramedSocket,
+    webrtc::WebRTCStream,
     AddrMangle, IntoTargetAddr, ResultType, Stream, TargetAddr,
 };
 
@@ -32,14 +38,41 @@ use crate::{
 };
 
 type Message = RendezvousMessage;
+type RendezvousSender = mpsc::UnboundedSender<Message>;
 
 lazy_static::lazy_static! {
     static ref SOLVING_PK_MISMATCH: Mutex<String> = Default::default();
     static ref LAST_MSG: Mutex<(SocketAddr, Instant)> = Mutex::new((SocketAddr::new([0; 4].into(), 0), Instant::now()));
     static ref LAST_RELAY_MSG: Mutex<(SocketAddr, Instant)> = Mutex::new((SocketAddr::new([0; 4].into(), 0), Instant::now()));
+    static ref WEBRTC_ICE_TXS: Mutex<HashMap<String, mpsc::UnboundedSender<String>>> = Default::default();
 }
 static SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
 static MANUAL_RESTARTED: AtomicBool = AtomicBool::new(false);
+static SENT_REGISTER_PK: AtomicBool = AtomicBool::new(false);
+pub(crate) static NEEDS_DEPLOY: AtomicBool = AtomicBool::new(false);
+// register_pk retry interval (ms) when device is awaiting deployment
+const DEPLOY_RETRY_INTERVAL: i64 = 30_000;
+lazy_static::lazy_static! {
+    static ref LAST_NOT_DEPLOYED_REGISTER: Mutex<Option<Instant>> = Mutex::new(None);
+}
+
+// Single source of truth for the "awaiting deployment" backoff. The server has
+// already told us this device is not in its db; until the operator runs
+// `rustdesk --deploy --token <api_token>` there is no point re-running the
+// register path more often than DEPLOY_RETRY_INTERVAL. Gating in the timer
+// loops (rather than only inside register_pk) also avoids the
+// last_register_sent / fails / latency / UDP-rebind churn the loop would
+// otherwise spin on while no response ever comes back.
+async fn deploy_register_throttled() -> bool {
+    if !NEEDS_DEPLOY.load(Ordering::SeqCst) {
+        return false;
+    }
+    LAST_NOT_DEPLOYED_REGISTER
+        .lock()
+        .await
+        .map(|t| (t.elapsed().as_millis() as i64) < DEPLOY_RETRY_INTERVAL)
+        .unwrap_or(false)
+}
 
 #[derive(Clone)]
 pub struct RendezvousMediator {
@@ -47,6 +80,7 @@ pub struct RendezvousMediator {
     host: String,
     host_prefix: String,
     keep_alive: i32,
+    rz_sender: RendezvousSender,
 }
 
 impl RendezvousMediator {
@@ -65,7 +99,7 @@ impl RendezvousMediator {
         }
         crate::hbbs_http::sync::start();
         #[cfg(target_os = "windows")]
-        if crate::platform::is_installed() && crate::is_server() && !crate::is_custom_client() {
+        if crate::platform::is_installed() && crate::is_server() {
             crate::updater::start_auto_update();
         }
         check_zombie();
@@ -157,11 +191,13 @@ impl RendezvousMediator {
         let host = check_port(&host, RENDEZVOUS_PORT);
         log::info!("start udp: {host}");
         let (mut socket, mut addr) = new_udp_for(&host, CONNECT_TIMEOUT).await?;
+        let (rz_sender, mut rz_out_rx) = mpsc::unbounded_channel::<Message>();
         let mut rz = Self {
             addr: addr.clone(),
             host: host.clone(),
             host_prefix: Self::get_host_prefix(&host),
             keep_alive: crate::DEFAULT_KEEP_ALIVE,
+            rz_sender,
         };
 
         let mut timer = crate::rustdesk_interval(interval(crate::TIMER_OUT));
@@ -221,9 +257,20 @@ impl RendezvousMediator {
                         },
                     }
                 },
+                Some(msg_out) = rz_out_rx.recv() => {
+                    Sink::Framed(&mut socket, &addr).send(&msg_out).await?;
+                },
                 _ = timer.tick() => {
                     if SHOULD_EXIT.load(Ordering::SeqCst) {
                         break;
+                    }
+                    // The server already told us this device is not deployed. Skip
+                    // the whole register / fails / latency / UDP-rebind path until
+                    // DEPLOY_RETRY_INTERVAL elapses, otherwise the loop spins every
+                    // few seconds (log spam + misapplied network-recovery rebind)
+                    // until the operator runs `rustdesk --deploy`.
+                    if deploy_register_throttled().await {
+                        continue;
                     }
                     let now = Some(Instant::now());
                     let expired = last_register_resp.map(|x| x.elapsed().as_millis() as i64 >= REG_INTERVAL).unwrap_or(true);
@@ -288,9 +335,21 @@ impl RendezvousMediator {
                         Config::set_key_confirmed(true);
                         Config::set_host_key_confirmed(&self.host_prefix, true);
                         *SOLVING_PK_MISMATCH.lock().await = "".to_owned();
+                        NEEDS_DEPLOY.store(false, Ordering::SeqCst);
                     }
                     Ok(register_pk_response::Result::UUID_MISMATCH) => {
                         self.handle_uuid_mismatch(sink).await?;
+                    }
+                    Ok(register_pk_response::Result::NOT_DEPLOYED) => {
+                        if !NEEDS_DEPLOY.load(Ordering::SeqCst) {
+                            log::warn!("Server requires deployment. Run `rustdesk --deploy --token <api_token>` on this device.");
+                        }
+                        NEEDS_DEPLOY.store(true, Ordering::SeqCst);
+                        // Clear key_confirmed so the UI reflects the truth: this device is
+                        // not currently registered. Covers the case where an online device
+                        // was deleted by an admin while running.
+                        Config::set_key_confirmed(false);
+                        Config::set_host_key_confirmed(&self.host_prefix, false);
                     }
                     _ => {
                         log::error!("unknown RegisterPkResponse");
@@ -322,6 +381,17 @@ impl RendezvousMediator {
                     allow_err!(rz.handle_intranet(fla, server).await);
                 });
             }
+            Some(rendezvous_message::Union::IceCandidate(ice)) => {
+                let tx = WEBRTC_ICE_TXS.lock().await.get(&ice.session_key).cloned();
+                if let Some(tx) = tx {
+                    let _ = tx.send(ice.candidate);
+                } else {
+                    log::debug!(
+                        "dropping ICE candidate for unknown WebRTC session key {}",
+                        ice.session_key
+                    );
+                }
+            }
             Some(rendezvous_message::Union::ConfigureUpdate(cu)) => {
                 let v0 = Config::get_rendezvous_servers();
                 Config::set_option(
@@ -344,11 +414,13 @@ impl RendezvousMediator {
         let mut conn = connect_tcp(host.clone(), CONNECT_TIMEOUT).await?;
         let key = crate::get_key(true).await;
         crate::secure_tcp(&mut conn, &key).await?;
+        let (rz_sender, mut rz_out_rx) = mpsc::unbounded_channel::<Message>();
         let mut rz = Self {
             addr: conn.local_addr().into_target_addr()?,
             host: host.clone(),
             host_prefix: Self::get_host_prefix(&host),
             keep_alive: crate::DEFAULT_KEEP_ALIVE,
+            rz_sender,
         };
         let mut timer = crate::rustdesk_interval(interval(crate::TIMER_OUT));
         let mut last_register_sent: Option<Instant> = None;
@@ -375,6 +447,9 @@ impl RendezvousMediator {
                     }
                     let msg = Message::parse_from_bytes(&bytes)?;
                     rz.handle_resp(msg.union, Sink::Stream(&mut conn), &server, &mut update_latency).await?
+                }
+                Some(msg_out) = rz_out_rx.recv() => {
+                    Sink::Stream(&mut conn).send(&msg_out).await?;
                 }
                 _ = timer.tick() => {
                     if SHOULD_EXIT.load(Ordering::SeqCst) {
@@ -427,6 +502,7 @@ impl RendezvousMediator {
             rr.secure,
             false,
             Default::default(),
+            String::new(),
             rr.control_permissions.clone().into_option(),
         )
         .await
@@ -441,6 +517,7 @@ impl RendezvousMediator {
         secure: bool,
         initiate: bool,
         socket_addr_v6: bytes::Bytes,
+        webrtc_sdp_answer: String,
         control_permissions: Option<ControlPermissions>,
     ) -> ResultType<()> {
         let peer_addr = AddrMangle::decode(&socket_addr);
@@ -459,6 +536,7 @@ impl RendezvousMediator {
             socket_addr: socket_addr.into(),
             version: crate::VERSION.to_owned(),
             socket_addr_v6,
+            webrtc_sdp_answer,
             ..Default::default()
         };
         if initiate {
@@ -526,6 +604,7 @@ impl RendezvousMediator {
             true,
             true,
             socket_addr_v6,
+            String::new(),
             fla.control_permissions.into_option(),
         )
         .await
@@ -568,6 +647,81 @@ impl RendezvousMediator {
         Ok(())
     }
 
+    async fn spawn_webrtc_answerer(
+        &self,
+        ph: &PunchHole,
+        force_relay: bool,
+        server: ServerPtr,
+        peer_addr: SocketAddr,
+        control_permissions: Option<ControlPermissions>,
+    ) -> ResultType<String> {
+        let mut stream =
+            WebRTCStream::new(&ph.webrtc_sdp_offer, force_relay, CONNECT_TIMEOUT).await?;
+        let answer = stream.get_local_endpoint().await?;
+        let session_key = stream.session_key().to_owned();
+        let return_route = ph.socket_addr.clone();
+
+        let (remote_ice_tx, mut remote_ice_rx) = mpsc::unbounded_channel::<String>();
+        WEBRTC_ICE_TXS
+            .lock()
+            .await
+            .insert(session_key.clone(), remote_ice_tx);
+
+        let stream_for_remote_ice = stream.clone();
+        tokio::spawn(async move {
+            while let Some(candidate) = remote_ice_rx.recv().await {
+                if let Err(err) = stream_for_remote_ice.add_remote_ice_candidate(&candidate).await
+                {
+                    log::warn!("failed to add remote WebRTC ICE candidate: {}", err);
+                }
+            }
+        });
+
+        if let Some(mut local_ice_rx) = stream.take_local_ice_rx() {
+            let sender = self.rz_sender.clone();
+            let socket_addr = return_route.clone();
+            let session_key_for_ice = session_key.clone();
+            tokio::spawn(async move {
+                while let Some(candidate) = local_ice_rx.recv().await {
+                    let mut msg = Message::new();
+                    msg.set_ice_candidate(IceCandidate {
+                        socket_addr: socket_addr.clone(),
+                        session_key: session_key_for_ice.clone(),
+                        candidate,
+                        ..Default::default()
+                    });
+                    let _ = sender.send(msg);
+                }
+            });
+        }
+
+        let session_key_for_cleanup = session_key.clone();
+        tokio::spawn(async move {
+            let result = stream.wait_connected(CONNECT_TIMEOUT).await;
+            WEBRTC_ICE_TXS
+                .lock()
+                .await
+                .remove(&session_key_for_cleanup);
+            if let Err(err) = result {
+                log::warn!("webrtc wait_connected failed: {}", err);
+                return;
+            }
+            if let Err(err) = crate::server::create_tcp_connection(
+                server,
+                Stream::WebRTC(stream),
+                peer_addr,
+                true,
+                control_permissions,
+            )
+            .await
+            {
+                log::warn!("failed to create WebRTC server connection: {}", err);
+            }
+        });
+
+        Ok(answer)
+    }
+
     async fn handle_punch_hole(&self, ph: PunchHole, server: ServerPtr) -> ResultType<()> {
         let mut peer_addr = AddrMangle::decode(&ph.socket_addr);
         let last = *LAST_MSG.lock().await;
@@ -579,7 +733,23 @@ impl RendezvousMediator {
         let peer_addr_v6 = hbb_common::AddrMangle::decode(&ph.socket_addr_v6);
         let relay = use_ws() || Config::is_proxy() || ph.force_relay;
         let mut socket_addr_v6 = Default::default();
-        let control_permissions = ph.control_permissions.into_option();
+        let control_permissions = ph.control_permissions.clone().into_option();
+        let webrtc_sdp_answer = if !ph.webrtc_sdp_offer.is_empty() {
+            self.spawn_webrtc_answerer(
+                &ph,
+                relay,
+                server.clone(),
+                peer_addr,
+                control_permissions.clone(),
+            )
+            .await
+            .unwrap_or_else(|err| {
+                log::warn!("failed to create WebRTC answer: {}", err);
+                String::new()
+            })
+        } else {
+            String::new()
+        };
         if peer_addr_v6.port() > 0 && !relay {
             socket_addr_v6 = start_ipv6(
                 peer_addr_v6,
@@ -606,6 +776,7 @@ impl RendezvousMediator {
                     true,
                     true,
                     socket_addr_v6.clone(),
+                    webrtc_sdp_answer.clone(),
                     control_permissions,
                 )
                 .await;
@@ -619,6 +790,7 @@ impl RendezvousMediator {
             nat_type: nat_type.into(),
             version: crate::VERSION.to_owned(),
             socket_addr_v6,
+            webrtc_sdp_answer,
             ..Default::default()
         };
         if ph.udp_port > 0 {
@@ -677,6 +849,21 @@ impl RendezvousMediator {
     }
 
     async fn register_pk(&mut self, socket: Sink<'_>) -> ResultType<()> {
+        // Throttle register_pk when the device is awaiting deployment: server
+        // already told us we're not in its db; sending more often than every
+        // DEPLOY_RETRY_INTERVAL ms is wasted traffic until the operator runs
+        // `rustdesk --deploy --token <api_token>`.
+        if NEEDS_DEPLOY.load(Ordering::SeqCst) {
+            let mut last = LAST_NOT_DEPLOYED_REGISTER.lock().await;
+            if let Some(t) = *last {
+                if (t.elapsed().as_millis() as i64) < DEPLOY_RETRY_INTERVAL {
+                    return Ok(());
+                }
+            }
+            *last = Some(Instant::now());
+        } else {
+            *LAST_NOT_DEPLOYED_REGISTER.lock().await = None;
+        }
         let mut msg_out = Message::new();
         let pk = Config::get_key_pair().1;
         let uuid = hbb_common::get_uuid();
@@ -689,6 +876,7 @@ impl RendezvousMediator {
             ..Default::default()
         });
         socket.send(&msg_out).await?;
+        SENT_REGISTER_PK.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -903,4 +1091,29 @@ async fn udp_nat_listen(
         )
     })?;
     Ok(())
+}
+
+// When config is not yet synced from root, register_pk may have already been sent with a new generated pk.
+// After config sync completes, the pk may change. This struct detects pk changes and triggers
+// a re-registration by setting key_confirmed to false.
+// NOTE:
+// This only corrects PK registration for the current ID. If root uses a non-default mac-generated ID,
+// this does not resolve the multi-ID issue by itself.
+pub struct CheckIfResendPk {
+    pk: Option<Vec<u8>>,
+}
+impl CheckIfResendPk {
+    pub fn new() -> Self {
+        Self {
+            pk: Config::get_cached_pk(),
+        }
+    }
+}
+impl Drop for CheckIfResendPk {
+    fn drop(&mut self) {
+        if SENT_REGISTER_PK.load(Ordering::SeqCst) && Config::get_cached_pk() != self.pk {
+            Config::set_key_confirmed(false);
+            log::info!("Set key_confirmed to false due to pk changed, will resend register_pk");
+        }
+    }
 }

@@ -376,7 +376,8 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
     }
 
     toolbarItems.add(Obx(() {
-      if (PrivacyModeState.find(widget.id).isEmpty &&
+      if ((PrivacyModeState.find(widget.id).isEmpty ||
+              allowDisplaySwitchInPrivacyMode(pi)) &&
           pi.displaysCount.value > 1) {
         return _MonitorMenu(
             id: widget.id,
@@ -996,10 +997,10 @@ class _DisplayMenuState extends State<_DisplayMenu> {
         toggles(),
       ];
       // privacy mode
+      final privacyModeState = PrivacyModeState.find(id);
       if (ffi.connType == ConnType.defaultConn &&
-          ffiModel.keyboard &&
-          pi.features.privacyMode) {
-        final privacyModeState = PrivacyModeState.find(id);
+          (pi.features.privacyMode || privacyModeState.isNotEmpty) &&
+          (ffiModel.keyboard || privacyModeState.isNotEmpty)) {
         final privacyModeList =
             toolbarPrivacyMode(privacyModeState, context, id, ffi);
         if (privacyModeList.length == 1) {
@@ -1861,8 +1862,18 @@ class _KeyboardMenu extends StatelessWidget {
           continue;
         }
 
-        if (pi.isWayland && mode.key != kKeyMapMode) {
-          continue;
+        if (pi.isWayland) {
+          // Legacy mode is hidden on desktop control side because dead keys
+          // don't work properly on Wayland. When the control side is mobile,
+          // Legacy mode is used automatically (mobile always sends Legacy events).
+          if (mode.key == kKeyLegacyMode) {
+            continue;
+          }
+          // Translate mode requires server >= 1.4.6.
+          if (mode.key == kKeyTranslateMode &&
+              versionCmp(pi.version, '1.4.6') < 0) {
+            continue;
+          }
         }
 
         var text = translate(mode.menu);
