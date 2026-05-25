@@ -48,8 +48,7 @@ env:
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
   RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
   RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
-  API_SERVER: "https://horus.tcepe.tc.br
-
+  
 jobs:
   generate-bridge:
     uses: ./.github/workflows/bridge.yml
