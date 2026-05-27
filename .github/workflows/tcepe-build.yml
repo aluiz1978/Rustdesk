@@ -14,12 +14,6 @@ env:
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   VERSION: "1.4.6"
   UPLOAD_ARTIFACT: "true"
-  RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
-  RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
-  API_SERVER: "https://horus.tcepe.tc.br"
-  DEFAULT_RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
-  DEFAULT_RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
-  DEFAULT_API_SERVER: "https://horus.tcepe.tc.br"
 
 jobs:
   generate-bridge:
@@ -61,25 +55,47 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Injetar Servidor Horus diretamente no codigo fonte (Fix)
+      - name: Injetar Forca Bruta dentro do script build.py (Fix Windows)
         shell: python
         run: |
           import os
-          file_path = 'libs/hbb_common/src/config.rs'
-          if os.path.exists(file_path):
-              with open(file_path, 'r', encoding='utf-8') as f:
+          with open('build.py', 'r', encoding='utf-8') as f:
+              original_build = f.read()
+          
+          injection = """
+          import os, re
+          print("=== INICIANDO INJECAO FORCADA DOS DADOS HORUS NO CODIGO FONTE ===")
+          os.environ['RENDEZVOUS_SERVER'] = 'horus.tcepe.tc.br'
+          os.environ['RS_PUB_KEY'] = 'NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g='
+          os.environ['API_SERVER'] = 'https://horus.tcepe.tc.br'
+          os.environ['DEFAULT_RENDEZVOUS_SERVER'] = 'horus.tcepe.tc.br'
+          os.environ['DEFAULT_RS_PUB_KEY'] = 'NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g='
+          os.environ['DEFAULT_API_SERVER'] = 'https://horus.tcepe.tc.br'
+          
+          c_path = 'libs/hbb_common/src/config.rs'
+          if os.path.exists(c_path):
+              with open(c_path, 'r', encoding='utf-8') as f:
                   code = f.read()
+              
+              code = re.sub(r'(pub\s+)?const\s+RENDEZVOUS_SERVER\s*:\s*&str\s*=.*?;', 'pub const RENDEZVOUS_SERVER: &str = "horus.tcepe.tc.br";', code)
+              code = re.sub(r'(pub\s+)?const\s+RS_PUB_KEY\s*:\s*&str\s*=.*?;', 'pub const RS_PUB_KEY: &str = "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=";', code)
+              code = re.sub(r'(pub\s+)?const\s+API_SERVER\s*:\s*&str\s*=.*?;', 'pub const API_SERVER: &str = "https://horus.tcepe.tc.br";', code)
+              code = re.sub(r'(pub\s+)?const\s+DEFAULT_RENDEZVOUS_SERVER\s*:\s*&str\s*=.*?;', 'pub const DEFAULT_RENDEZVOUS_SERVER: &str = "horus.tcepe.tc.br";', code)
+              code = re.sub(r'(pub\s+)?const\s+DEFAULT_RS_PUB_KEY\s*:\s*&str\s*=.*?;', 'pub const DEFAULT_RS_PUB_KEY: &str = "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=";', code)
+              
               code = code.replace('option_env!("RENDEZVOUS_SERVER")', 'Some("horus.tcepe.tc.br")')
               code = code.replace('option_env!("RS_PUB_KEY")', 'Some("NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=")')
               code = code.replace('option_env!("API_SERVER")', 'Some("https://horus.tcepe.tc.br")')
-              override_logic = 'pub fn get_option(key: &str) -> String {\n    match key {\n        "custom-rendezvous-server" | "rendezvous-server" | "rendezvous_server" => return "horus.tcepe.tc.br".to_owned(),\n        "relay-server" | "relay_server" => return "horus.tcepe.tc.br".to_owned(),\n        "api-server" | "api_server" => return "https://horus.tcepe.tc.br".to_owned(),\n        "key" => return "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=".to_owned(),\n        _ => {}\n    }'
-              if "pub fn get_option(key: &str) -> String {" in code:
-                  code = code.replace("pub fn get_option(key: &str) -> String {", override_logic)
-              with open(file_path, 'w', encoding='utf-8') as f:
+              code = code.replace('option_env!("DEFAULT_RENDEZVOUS_SERVER")', 'Some("horus.tcepe.tc.br")')
+              code = code.replace('option_env!("DEFAULT_RS_PUB_KEY")', 'Some("NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=")')
+              
+              with open(c_path, 'w', encoding='utf-8') as f:
                   f.write(code)
-              print("--- SUCESSO: Dados do Horus injetados no config.rs ---")
-          else:
-              print("--- ERRO: Arquivo config.rs nao encontrado ---")
+              print("=== INJECAO NO CONFIG.RS REALIZADA COM SUCESSO EM TEMPO DE EXECUCO ===")
+          """
+          with open('build.py', 'w', encoding='utf-8') as f:
+              f.write(injection + "\\n" + original_build)
+          print("--- SUCESSO: build.py preparado com o patch Horus ---")
 
       - name: Restore bridge files
         uses: actions/download-artifact@master
@@ -148,13 +164,6 @@ jobs:
         shell: bash
 
       - name: Build rustdesk
-        env:
-          RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
-          RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
-          API_SERVER: "https://horus.tcepe.tc.br"
-          DEFAULT_RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
-          DEFAULT_RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
-          DEFAULT_API_SERVER: "https://horus.tcepe.tc.br"
         run: |
           python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
@@ -269,25 +278,47 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Injetar Servidor Horus diretamente no codigo fonte (Fix)
+      - name: Injetar Forca Bruta dentro do script build.py (Fix Mac)
         shell: python
         run: |
           import os
-          file_path = 'libs/hbb_common/src/config.rs'
-          if os.path.exists(file_path):
-              with open(file_path, 'r', encoding='utf-8') as f:
+          with open('build.py', 'r', encoding='utf-8') as f:
+              original_build = f.read()
+          
+          injection = """
+          import os, re
+          print("=== INICIANDO INJECAO FORCADA DOS DADOS HORUS NO CODIGO FONTE ===")
+          os.environ['RENDEZVOUS_SERVER'] = 'horus.tcepe.tc.br'
+          os.environ['RS_PUB_KEY'] = 'NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g='
+          os.environ['API_SERVER'] = 'https://horus.tcepe.tc.br'
+          os.environ['DEFAULT_RENDEZVOUS_SERVER'] = 'horus.tcepe.tc.br'
+          os.environ['DEFAULT_RS_PUB_KEY'] = 'NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g='
+          os.environ['DEFAULT_API_SERVER'] = 'https://horus.tcepe.tc.br'
+          
+          c_path = 'libs/hbb_common/src/config.rs'
+          if os.path.exists(c_path):
+              with open(c_path, 'r', encoding='utf-8') as f:
                   code = f.read()
+              
+              code = re.sub(r'(pub\s+)?const\s+RENDEZVOUS_SERVER\s*:\s*&str\s*=.*?;', 'pub const RENDEZVOUS_SERVER: &str = "horus.tcepe.tc.br";', code)
+              code = re.sub(r'(pub\s+)?const\s+RS_PUB_KEY\s*:\s*&str\s*=.*?;', 'pub const RS_PUB_KEY: &str = "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=";', code)
+              code = re.sub(r'(pub\s+)?const\s+API_SERVER\s*:\s*&str\s*=.*?;', 'pub const API_SERVER: &str = "https://horus.tcepe.tc.br";', code)
+              code = re.sub(r'(pub\s+)?const\s+DEFAULT_RENDEZVOUS_SERVER\s*:\s*&str\s*=.*?;', 'pub const DEFAULT_RENDEZVOUS_SERVER: &str = "horus.tcepe.tc.br";', code)
+              code = re.sub(r'(pub\s+)?const\s+DEFAULT_RS_PUB_KEY\s*:\s*&str\s*=.*?;', 'pub const DEFAULT_RS_PUB_KEY: &str = "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=";', code)
+              
               code = code.replace('option_env!("RENDEZVOUS_SERVER")', 'Some("horus.tcepe.tc.br")')
               code = code.replace('option_env!("RS_PUB_KEY")', 'Some("NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=")')
               code = code.replace('option_env!("API_SERVER")', 'Some("https://horus.tcepe.tc.br")')
-              override_logic = 'pub fn get_option(key: &str) -> String {\n    match key {\n        "custom-rendezvous-server" | "rendezvous-server" | "rendezvous_server" => return "horus.tcepe.tc.br".to_owned(),\n        "relay-server" | "relay_server" => return "horus.tcepe.tc.br".to_owned(),\n        "api-server" | "api_server" => return "https://horus.tcepe.tc.br".to_owned(),\n        "key" => return "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=".to_owned(),\n        _ => {}\n    }'
-              if "pub fn get_option(key: &str) -> String {" in code:
-                  code = code.replace("pub fn get_option(key: &str) -> String {", override_logic)
-              with open(file_path, 'w', encoding='utf-8') as f:
+              code = code.replace('option_env!("DEFAULT_RENDEZVOUS_SERVER")', 'Some("horus.tcepe.tc.br")')
+              code = code.replace('option_env!("DEFAULT_RS_PUB_KEY")', 'Some("NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=")')
+              
+              with open(c_path, 'w', encoding='utf-8') as f:
                   f.write(code)
-              print("--- SUCESSO: Dados do Horus injetados no config.rs ---")
-          else:
-              print("--- ERRO: Arquivo config.rs nao encontrado ---")
+              print("=== INJECAO NO CONFIG.RS REALIZADA COM SUCESSO EM TEMPO DE EXECUCO ===")
+          """
+          with open('build.py', 'w', encoding='utf-8') as f:
+              f.write(injection + "\\n" + original_build)
+          print("--- SUCESSO: build.py preparado com o patch Horus ---")
 
       - name: Install build runtime
         run: |
@@ -369,13 +400,6 @@ jobs:
           rustc -V
 
       - name: Build rustdesk
-        env:
-          RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
-          RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
-          API_SERVER: "https://horus.tcepe.tc.br"
-          DEFAULT_RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
-          DEFAULT_RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
-          DEFAULT_API_SERVER: "https://horus.tcepe.tc.br"
         run: |
           if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
             MIN_MACOS_VERSION="12.3"
