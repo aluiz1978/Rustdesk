@@ -17,6 +17,9 @@ env:
   RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
   RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
   API_SERVER: "https://horus.tcepe.tc.br"
+  DEFAULT_RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
+  DEFAULT_RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
+  DEFAULT_API_SERVER: "https://horus.tcepe.tc.br"
 
 jobs:
   generate-bridge:
@@ -57,6 +60,26 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Injetar Servidor Horus diretamente no codigo fonte (Fix)
+        shell: python
+        run: |
+          import os
+          file_path = 'libs/hbb_common/src/config.rs'
+          if os.path.exists(file_path):
+              with open(file_path, 'r', encoding='utf-8') as f:
+                  code = f.read()
+              code = code.replace('option_env!("RENDEZVOUS_SERVER")', 'Some("horus.tcepe.tc.br")')
+              code = code.replace('option_env!("RS_PUB_KEY")', 'Some("NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=")')
+              code = code.replace('option_env!("API_SERVER")', 'Some("https://horus.tcepe.tc.br")')
+              override_logic = 'pub fn get_option(key: &str) -> String {\n    match key {\n        "custom-rendezvous-server" | "rendezvous-server" | "rendezvous_server" => return "horus.tcepe.tc.br".to_owned(),\n        "relay-server" | "relay_server" => return "horus.tcepe.tc.br".to_owned(),\n        "api-server" | "api_server" => return "https://horus.tcepe.tc.br".to_owned(),\n        "key" => return "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=".to_owned(),\n        _ => {}\n    }'
+              if "pub fn get_option(key: &str) -> String {" in code:
+                  code = code.replace("pub fn get_option(key: &str) -> String {", override_logic)
+              with open(file_path, 'w', encoding='utf-8') as f:
+                  f.write(code)
+              print("--- SUCESSO: Dados do Horus injetados no config.rs ---")
+          else:
+              print("--- ERRO: Arquivo config.rs nao encontrado ---")
 
       - name: Restore bridge files
         uses: actions/download-artifact@master
@@ -129,6 +152,9 @@ jobs:
           RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
           RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
           API_SERVER: "https://horus.tcepe.tc.br"
+          DEFAULT_RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
+          DEFAULT_RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
+          DEFAULT_API_SERVER: "https://horus.tcepe.tc.br"
         run: |
           python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
@@ -243,6 +269,26 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Injetar Servidor Horus diretamente no codigo fonte (Fix)
+        shell: python
+        run: |
+          import os
+          file_path = 'libs/hbb_common/src/config.rs'
+          if os.path.exists(file_path):
+              with open(file_path, 'r', encoding='utf-8') as f:
+                  code = f.read()
+              code = code.replace('option_env!("RENDEZVOUS_SERVER")', 'Some("horus.tcepe.tc.br")')
+              code = code.replace('option_env!("RS_PUB_KEY")', 'Some("NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=")')
+              code = code.replace('option_env!("API_SERVER")', 'Some("https://horus.tcepe.tc.br")')
+              override_logic = 'pub fn get_option(key: &str) -> String {\n    match key {\n        "custom-rendezvous-server" | "rendezvous-server" | "rendezvous_server" => return "horus.tcepe.tc.br".to_owned(),\n        "relay-server" | "relay_server" => return "horus.tcepe.tc.br".to_owned(),\n        "api-server" | "api_server" => return "https://horus.tcepe.tc.br".to_owned(),\n        "key" => return "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g=".to_owned(),\n        _ => {}\n    }'
+              if "pub fn get_option(key: &str) -> String {" in code:
+                  code = code.replace("pub fn get_option(key: &str) -> String {", override_logic)
+              with open(file_path, 'w', encoding='utf-8') as f:
+                  f.write(code)
+              print("--- SUCESSO: Dados do Horus injetados no config.rs ---")
+          else:
+              print("--- ERRO: Arquivo config.rs nao encontrado ---")
+
       - name: Install build runtime
         run: |
           brew install llvm create-dmg
@@ -327,6 +373,9 @@ jobs:
           RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
           RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
           API_SERVER: "https://horus.tcepe.tc.br"
+          DEFAULT_RENDEZVOUS_SERVER: "horus.tcepe.tc.br"
+          DEFAULT_RS_PUB_KEY: "NctRD1DQC8cLPTWoUaNGDsF0Flb7TLvusYOOeBSOq6g="
+          DEFAULT_API_SERVER: "https://horus.tcepe.tc.br"
         run: |
           if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
             MIN_MACOS_VERSION="12.3"
