@@ -58,11 +58,11 @@ jobs:
       - name: Injetar Forca Bruta dentro do script build.py (Fix Windows)
         shell: python
         run: |
-          import os
+          import os, textwrap
           with open('build.py', 'r', encoding='utf-8') as f:
               original_build = f.read()
           
-          injection = """
+          injection = textwrap.dedent(r'''
           import os, re
           print("=== INICIANDO INJECAO FORCADA DOS DADOS HORUS NO CODIGO FONTE ===")
           os.environ['RENDEZVOUS_SERVER'] = 'horus.tcepe.tc.br'
@@ -91,12 +91,13 @@ jobs:
               
               with open(c_path, 'w', encoding='utf-8') as f:
                   f.write(code)
-              print("=== INJECAO NO CONFIG.RS REALIZADA COM SUCESSO EM TEMPO DE EXECUCO ===")
-          """
+              print("=== INJECAO NO CONFIG.RS REALIZADA COM SUCESSO EM TEMPO DE EXECUCAO ===")
+          ''').strip()
+          
           with open('build.py', 'w', encoding='utf-8') as f:
-              f.write(injection + "\\n" + original_build)
-          print("--- SUCESSO: build.py preparado com o patch Horus ---")
-
+              f.write(injection + '\n\n' + original_build)
+          print("--- SUCESSO: build.py preparado com o patch Horus sem erros de identacao ---")
+        
       - name: Restore bridge files
         uses: actions/download-artifact@master
         with:
@@ -281,11 +282,11 @@ jobs:
       - name: Injetar Forca Bruta dentro do script build.py (Fix Mac)
         shell: python
         run: |
-          import os
+          import os, textwrap
           with open('build.py', 'r', encoding='utf-8') as f:
               original_build = f.read()
           
-          injection = """
+          injection = textwrap.dedent(r'''
           import os, re
           print("=== INICIANDO INJECAO FORCADA DOS DADOS HORUS NO CODIGO FONTE ===")
           os.environ['RENDEZVOUS_SERVER'] = 'horus.tcepe.tc.br'
@@ -314,12 +315,13 @@ jobs:
               
               with open(c_path, 'w', encoding='utf-8') as f:
                   f.write(code)
-              print("=== INJECAO NO CONFIG.RS REALIZADA COM SUCESSO EM TEMPO DE EXECUCO ===")
-          """
+              print("=== INJECAO NO CONFIG.RS REALIZADA COM SUCESSO EM TEMPO DE EXECUCAO ===")
+          ''').strip()
+          
           with open('build.py', 'w', encoding='utf-8') as f:
-              f.write(injection + "\\n" + original_build)
-          print("--- SUCESSO: build.py preparado com o patch Horus ---")
-
+              f.write(injection + '\n\n' + original_build)
+          print("--- SUCESSO: build.py preparado com o patch Horus sem erros de identacao ---")
+        
       - name: Install build runtime
         run: |
           brew install llvm create-dmg
